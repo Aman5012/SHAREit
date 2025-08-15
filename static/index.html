@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ShareIt — Pure</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <h1>ShareIt</h1>
+      <p class="muted">Drag & drop or choose files. Works on phone & desktop.</p>
+    </header>
+
+    <main class="card">
+      <div id="connectionInfo" style="text-align:center; margin-bottom:20px;">
+        <h3>📡 Connect to this device</h3>
+        <img id="qrCode" alt="QR Code" width="200" style="margin:10px 0;">
+        <p><a id="ipLink" href="#" target="_blank"></a></p>
+      </div>
+      
+      <section class="uploader" id="dropZone" ondrop="dropHandler(event)" ondragover="dragOverHandler(event)">
+        <input id="fileInput" type="file" multiple onchange="handleFiles(this.files)" style="visibility: hidden;"/>
+        
+        <!-- Uncomment the line below to enable directory upload support -->
+        <!-- <input id="fileInput" type="file" multiple webkitdirectory directory onchange="handleFiles(this.files)" style="visibility: hidden;"/> -->
+
+
+        <div class="drop-inner" onclick="document.getElementById('fileInput').click();">
+          <div class="icon">⬆️</div>
+          <div class="title">Drop files here or tap to select</div>
+          <div class="sub muted">Multiple files supported — uploads show progress & speed</div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button id="uploadBtn" class="primary">Upload Selected</button>
+        <button id="refreshBtn">Refresh List</button>
+        <div class="speeds small">
+          <div>Upload: <span id="uploadSpeed">0 B/s</span></div>
+          <div>Server (download est.): <span id="downloadSpeed">0 B/s</span></div>
+        </div>
+      </div>
+
+      <div id="selectedList" class="selectedList"></div>
+
+      <hr/>
+
+      <section>
+        <h3>Available files</h3>
+        <div id="filesList" class="filesList">Loading...</div>
+      </section>
+    </main>
+
+    <footer class="foot muted">Open this page on another device in the same LAN using this machine's IP (port 9000).</footer>
+  </div>
+  
+<div id="previewModal" class="modal" style="display:none;">
+  <div class="modal-content">
+    <div id="previewArea"></div>
+  </div>
+</div>
+
+
+<script src="app.js"></script>
+</body>
+</html>
