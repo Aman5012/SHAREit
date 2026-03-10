@@ -1,5 +1,4 @@
-
-// app.js - client logic (pure JS)
+// app.js - Updated with Passcode Authentication
 const fileInput = document.getElementById('fileInput');
 const dropZone = document.getElementById('dropZone');
 const uploadBtn = document.getElementById('uploadBtn');
@@ -10,11 +9,107 @@ const uploadSpeedEl = document.getElementById('uploadSpeed');
 const downloadSpeedEl = document.getElementById('downloadSpeed');
 
 let selectedFiles = [];
+let userPin = ""; // Stores the session passcode
 
-// Handle file input selection (multiple files/folders)
+// NEW: Unlock function to show content
+// NEW: Unlock function to show content
+window.unlockVault = function () {
+  const inputs = document.querySelectorAll('.pin-digit');
+  userPin = Array.from(inputs).map(input => input.value).join('');
+
+  if (userPin.length !== 6) {
+    alert("Please enter a 6-digit PIN");
+    return;
+  }
+
+  // Test the pin by trying to fetch the files list
+  fetch('/api/files', {
+    headers: { 'x-passcode': userPin }
+  })
+    .then(res => {
+      if (res.status === 200) {
+        document.getElementById('lockScreen').style.display = 'none';
+        document.getElementById('vaultContent').style.display = 'block';
+        fetchFiles();
+      } else {
+        alert("Unauthorized: Invalid PIN");
+        // Clear inputs on failure
+        inputs.forEach(input => input.value = '');
+        inputs[0].focus();
+        userPin = ""; // STOP POLLING: Clear the stored PIN so background tasks don't keep checking
+      }
+    })
+    .catch(err => {
+      alert("Connection error. Check if server is running.");
+      userPin = ""; // Clear pin on error too
+    });
+};
+
+// PIN Input Logic
+document.addEventListener('DOMContentLoaded', () => {
+  const inputs = document.querySelectorAll('.pin-digit');
+  const unlockBtn = document.getElementById('unlockBtn');
+
+  if (unlockBtn) {
+    unlockBtn.addEventListener('click', window.unlockVault);
+  }
+
+  inputs.forEach((input, index) => {
+    // Handle input (typing)
+    input.addEventListener('input', (e) => {
+      // Allow only numbers
+      input.value = input.value.replace(/[^0-9]/g, '');
+
+      if (input.value.length > 1) {
+        input.value = input.value.slice(0, 1);
+      }
+
+      // Auto-focus next
+      if (input.value.length === 1) {
+        if (index < inputs.length - 1) {
+          inputs[index + 1].focus();
+        } else {
+          // If last digit, maybe focus unlock button?
+          unlockBtn.focus();
+        }
+      }
+    });
+
+    // Handle special keys (Backspace, Arrows)
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && input.value === '') {
+        if (index > 0) {
+          inputs[index - 1].focus();
+        }
+      } else if (e.key === 'ArrowLeft') {
+        if (index > 0) inputs[index - 1].focus();
+      } else if (e.key === 'ArrowRight') {
+        if (index < inputs.length - 1) inputs[index + 1].focus();
+      } else if (e.key === 'Enter') {
+        window.unlockVault();
+      }
+    });
+
+    // Handle Paste (optional but good UX)
+    input.addEventListener('paste', (e) => {
+      e.preventDefault();
+      const pasteData = e.clipboardData.getData('text').replace(/[^0-9]/g, '').slice(0, 6);
+      if (pasteData) {
+        pasteData.split('').forEach((char, i) => {
+          if (inputs[index + i]) inputs[index + i].value = char;
+        });
+        // Focus the next empty one or the last one
+        const lastFilled = Math.min(index + pasteData.length, 5);
+        inputs[lastFilled].focus();
+      }
+    });
+  });
+});
+
+// --- Original Logic maintained below ---
+
 fileInput.addEventListener('change', (e) => handleSelectedFiles(Array.from(e.target.files)));
 
-// Drag & Drop handlers
 dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 dropZone.addEventListener('drop', async (e) => {
@@ -24,9 +119,7 @@ dropZone.addEventListener('drop', async (e) => {
   if (items) {
     for (const item of items) {
       const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
-      if (entry) {
-        await traverseFileTree(entry);
-      }
+      if (entry) { await traverseFileTree(entry); }
     }
     renderSelected();
   } else {
@@ -34,7 +127,6 @@ dropZone.addEventListener('drop', async (e) => {
   }
 });
 
-// Allow clicking drop zone to open file picker
 dropZone.addEventListener('click', () => fileInput.click());
 
 function handleSelectedFiles(files) {
@@ -42,27 +134,20 @@ function handleSelectedFiles(files) {
   renderSelected();
 }
 
-// Recursive function to read folders
 async function traverseFileTree(item, path = "") {
   return new Promise((resolve) => {
     if (item.isFile) {
-      item.file((file) => {
-        selectedFiles.push(file);
-        resolve();
-      });
+      item.file((file) => { selectedFiles.push(file); resolve(); });
     } else if (item.isDirectory) {
       const reader = item.createReader();
       reader.readEntries(async (entries) => {
-        for (const entry of entries) {
-          await traverseFileTree(entry, path + item.name + "/");
-        }
+        for (const entry of entries) { await traverseFileTree(entry, path + item.name + "/"); }
         resolve();
       });
     }
   });
 }
 
-// Render selected file list
 function renderSelected() {
   selectedList.innerHTML = '';
   if (!selectedFiles.length) {
@@ -82,79 +167,165 @@ function renderSelected() {
   });
 }
 
-// Upload logic: sequential upload
+// Queue Management
+const CONCURRENCY = 3;
+
 uploadBtn.addEventListener('click', async () => {
   if (!selectedFiles.length) return alert('Select files first');
   uploadBtn.disabled = true;
-  const totalStart = Date.now();
-  for (let i = 0; i < selectedFiles.length; i++) {
-    const f = selectedFiles[i];
-    const row = selectedList.children[i];
-    const bar = row.querySelector('.progress > i');
-    const pctText = row.querySelector('.progress .small');
-    await uploadSingleFile(f, (loaded, total) => {
-      const pct = Math.round((loaded / total) * 100);
-      bar.style.width = pct + '%';
-      pctText.textContent = `${formatBytes(loaded)} / ${formatBytes(total)} — ${pct}%`;
-    }, (speed) => {
-      uploadSpeedEl.textContent = formatBytes(speed) + '/s';
+
+  const queue = [...selectedFiles];
+  const totalFiles = queue.length;
+  let activeUploads = 0;
+  let completed = 0;
+
+  // Map files to their row indices for progress bars
+  const fileIndices = new Map();
+  selectedFiles.forEach((f, i) => fileIndices.set(f, i));
+
+  const runQueue = async () => {
+    // While there are files left or active uploads
+    return new Promise((resolve) => {
+      const next = () => {
+        if (queue.length === 0 && activeUploads === 0) {
+          resolve();
+          return;
+        }
+
+        while (queue.length > 0 && activeUploads < CONCURRENCY) {
+          const f = queue.shift();
+          activeUploads++;
+          const idx = fileIndices.get(f);
+          const row = selectedList.children[idx];
+          const bar = row.querySelector('.progress > i');
+          const pctText = row.querySelector('.progress .small');
+
+          pctText.textContent = "Hashing..."; // Indicate hashing phase
+
+          // Calculate Hash First
+          calculateHash(f).then(hash => {
+            pctText.textContent = "Uploading...";
+            return uploadSingleFile(f, hash, (loaded, total) => {
+              const pct = Math.round((loaded / total) * 100);
+              bar.style.width = pct + '%';
+              pctText.textContent = `${formatBytes(loaded)} / ${formatBytes(total)} — ${pct}%`;
+            }, (speed) => {
+              // Update global speed (simplified for parallel)
+              uploadSpeedEl.textContent = formatBytes(speed) + '/s';
+            });
+          }).then(res => {
+            // Success
+            bar.style.backgroundColor = res.verified ? '#4caf50' : '#ff9800'; // Green if verified
+            pctText.textContent = res.verified ? "Done (Verified)" : "Done (Unverified)";
+          }).catch(err => {
+            bar.style.backgroundColor = '#f44336';
+            pctText.textContent = `Failed: ${err.message}`;
+          }).finally(() => {
+            activeUploads--;
+            completed++;
+            next();
+          });
+        }
+      };
+      next();
     });
-  }
-  const totalTime = (Date.now() - totalStart) / 1000;
-  console.log('All uploads done in', totalTime, 's');
+  };
+
+  await runQueue();
+
+  console.log('All uploads done');
   selectedFiles = [];
-  renderSelected();
+  // Keep list to show status, maybe clear on next selection
   uploadBtn.disabled = false;
-  await fetchFiles(); // auto-refresh
+  await fetchFiles();
 });
 
-// Upload one file
-function uploadSingleFile(file, onProgress, onSpeed) {
+// SHA-256 Hash Function
+async function calculateHash(file) {
+  // Graceful fallback for non-secure contexts (HTTP) where crypto.subtle is undefined
+  if (!window.crypto || !window.crypto.subtle) {
+    console.warn("Crypto API not available (requires HTTPS). Skipping client-side hash.");
+    return null;
+  }
+  try {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    console.error("Hashing failed:", e);
+    return null;
+  }
+}
+
+function uploadSingleFile(file, hash, onProgress, onSpeed) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const fd = new FormData();
     fd.append('files', file);
 
-    let lastLoaded = 0;
-    let lastTime = Date.now();
-
+    let lastLoaded = 0; let lastTime = Date.now();
     xhr.open('POST', '/api/upload', true);
 
-    xhr.upload.onprogress = function(e) {
+    // UPDATED: Attach passcode and hash to upload
+    xhr.setRequestHeader('x-passcode', userPin);
+    if (hash) xhr.setRequestHeader('x-file-hash', hash);
+
+    xhr.upload.onprogress = function (e) {
       if (!e.lengthComputable) return;
       const now = Date.now();
       const dt = (now - lastTime) / 1000 || 1;
-      const diff = e.loaded - lastLoaded;
-      const speed = diff / dt; // bytes/sec
+      const speed = (e.loaded - lastLoaded) / dt;
       lastLoaded = e.loaded; lastTime = now;
       if (typeof onSpeed === 'function') onSpeed(speed);
       if (typeof onProgress === 'function') onProgress(e.loaded, e.total);
     };
 
-    xhr.onload = function() {
+    xhr.onload = function () {
       if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else reject(new Error('Upload failed: ' + xhr.status));
+        let res;
+        try { res = JSON.parse(xhr.responseText); } catch (e) { res = {}; }
+        const info = res.results ? res.results[0] : {};
+        if (info.error) {
+          reject(new Error(info.error));
+        } else {
+          resolve(info);
+        }
+      }
+      else {
+        // Try to parse error response
+        let msg = 'Upload failed';
+        try {
+          const errJson = JSON.parse(xhr.responseText);
+          if (errJson.error) msg = errJson.error;
+        } catch (e) { }
+        reject(new Error(`${msg} (${xhr.status})`));
+      }
     };
     xhr.onerror = () => reject(new Error('Network error'));
     xhr.send(fd);
   });
 }
 
-// Fetch files list
 async function fetchFiles() {
+  if (!userPin) return; // Wait for login
   filesList.innerHTML = 'Loading...';
   try {
-    const res = await fetch('/api/files');
+    const res = await fetch('/api/files', {
+      headers: { 'x-passcode': userPin }
+    });
+    if (res.status !== 200) throw new Error("Auth Failed");
     const json = await res.json();
     renderFiles(json.files || []);
   } catch (e) {
+    // If auth failed, maybe kick to lock screen?
+    if (e.message === "Auth Failed") {
+      document.getElementById('lockScreen').style.display = 'block';
+      document.getElementById('vaultContent').style.display = 'none';
+    }
     filesList.innerHTML = 'Failed to fetch files';
   }
 }
-
-
-
 
 function renderFiles(list) {
   filesList.innerHTML = '';
@@ -163,7 +334,7 @@ function renderFiles(list) {
     return;
   }
   list.forEach(f => {
-    const el = document.createElement('div'); 
+    const el = document.createElement('div');
     el.className = 'file-item';
     el.innerHTML = `
       <div>
@@ -172,189 +343,107 @@ function renderFiles(list) {
       </div>
       <div>
         <button class="preview-btn" data-id="${encodeURIComponent(f.id)}" data-name="${escapeHtml(f.name)}">Preview</button>
-        <a class="download-btn" href="/api/files/${encodeURIComponent(f.id)}/download">Download</a>
+        <a class="download-btn" href="/api/files/${encodeURIComponent(f.id)}/download?pin=${encodeURIComponent(userPin)}">Download</a>
       </div>`;
     filesList.appendChild(el);
   });
 
-  // Attach preview event listeners
   document.querySelectorAll('.preview-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      previewFile(btn.dataset.id, btn.dataset.name);
-    });
+    btn.addEventListener('click', () => { previewFile(btn.dataset.id, btn.dataset.name); });
   });
 }
-
-
 
 function previewFile(fileId, fileName) {
   const ext = (fileName.split('.').pop() || '').toLowerCase();
   const previewArea = document.getElementById('previewArea');
   const previewModal = document.getElementById('previewModal');
-
-  // Show modal & loading placeholder
   previewArea.innerHTML = `<div class="preview-loading">Loading preview…</div>`;
   previewModal.style.display = 'flex';
 
-  const fileUrl = `/api/files/${encodeURIComponent(fileId)}/download`;
+  // Pass pin in query for preview downloads
+  const fileUrl = `/api/files/${encodeURIComponent(fileId)}/download?pin=${encodeURIComponent(userPin)}`;
 
-  // Helper to show plain fallback
   const showFallback = () => {
-    previewArea.innerHTML = `<div class="small">No preview available for this file type. <a href="${fileUrl}" target="_blank">Download</a></div>`;
+    previewArea.innerHTML = `<div class="small">No preview available. <a href="${fileUrl}" target="_blank">Download</a></div>`;
   };
 
-  // IMAGE
-  if (['jpg','jpeg','png','gif','webp','svg','bmp'].includes(ext)) {
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) {
     const img = document.createElement('img');
     img.className = 'preview-media';
-    img.alt = fileName;
     img.src = fileUrl;
-    // remove loading when loaded, or show error
-    img.onload = () => {};
-    img.onerror = () => { previewArea.innerHTML = '<div class="small">Failed to load image preview.</div>'; };
-    previewArea.innerHTML = ''; // clear loading
-    previewArea.appendChild(img);
+    img.onload = () => { previewArea.innerHTML = ''; previewArea.appendChild(img); };
     return;
   }
 
-  // VIDEO
-  if (['mp4','webm','ogg'].includes(ext)) {
+  if (['mp4', 'webm', 'ogg'].includes(ext)) {
     const video = document.createElement('video');
-    video.className = 'preview-media';
-    video.controls = true;
-    video.playsInline = true;
-    const src = document.createElement('source');
-    src.src = fileUrl;
-    src.type = `video/${ext}`;
+    video.className = 'preview-media'; video.controls = true;
+    const src = document.createElement('source'); src.src = fileUrl;
     video.appendChild(src);
-    video.onloadedmetadata = () => { /* metadata loaded */ };
-    video.onerror = () => { previewArea.innerHTML = '<div class="small">Failed to load video preview.</div>'; };
-    previewArea.innerHTML = '';
-    previewArea.appendChild(video);
+    previewArea.innerHTML = ''; previewArea.appendChild(video);
     return;
   }
 
-  // AUDIO
-  if (['mp3','wav','ogg'].includes(ext)) {
-    const audio = document.createElement('audio');
-    audio.controls = true;
-    audio.style.width = '100%';
-    const src = document.createElement('source');
-    src.src = fileUrl;
-    src.type = `audio/${ext}`;
-    audio.appendChild(src);
-    audio.onerror = () => { previewArea.innerHTML = '<div class="small">Failed to load audio preview.</div>'; };
-    previewArea.innerHTML = '';
-    previewArea.appendChild(audio);
-    return;
-  }
-
-  // PDF
   if (ext === 'pdf') {
     const iframe = document.createElement('iframe');
-    iframe.className = 'preview-iframe';
-    iframe.src = fileUrl;
-    iframe.onload = () => {previewArea.innerHTML = ''; };
-    iframe.onerror = () => { previewArea.innerHTML = '<div class="small">Failed to load PDF preview.</div>'; };
-    previewArea.innerHTML = '<div>Download to open</div>';
-    previewArea.appendChild(iframe);
+    iframe.className = 'preview-iframe'; iframe.src = fileUrl;
+    previewArea.innerHTML = ''; previewArea.appendChild(iframe);
     return;
   }
 
-  // TEXT / CODE
-  if (['txt','log','json','js','py','css','html','md','csv'].includes(ext)) {
-    fetch(fileUrl)
-      .then(r => {
-        if (!r.ok) throw new Error('Network response was not ok');
-        return r.text();
-      })
-      .then(text => {
-        const pre = document.createElement('pre');
-        pre.className = 'preview-text';
-        pre.textContent = text; // safe
-        previewArea.innerHTML = '';
-        previewArea.appendChild(pre);
-      })
-      .catch(() => {
-        previewArea.innerHTML = `<div class="small">Unable to load preview. <a href="${fileUrl}" target="_blank">Download</a></div>`;
-      });
+  if (['txt', 'log', 'json', 'js', 'py', 'css', 'html', 'md'].includes(ext)) {
+    fetch(fileUrl).then(r => r.text()).then(text => {
+      const pre = document.createElement('pre'); pre.className = 'preview-text';
+      pre.textContent = text; previewArea.innerHTML = ''; previewArea.appendChild(pre);
+    });
     return;
   }
-
-  //fallback
   showFallback();
-
 }
 
-
-
-// Close modal on click
 document.getElementById('previewModal').addEventListener('click', (e) => {
-  const modal = document.getElementById('previewModal');
-  if (e.target !== modal) {
-    return;
-  }
-  e.target.style.display = 'none';
+  if (e.target === document.getElementById('previewModal')) e.target.style.display = 'none';
 });
 
 
-// show a friendly fallback in the preview area
-function showFallback(fileUrl) {
-  const previewArea = document.getElementById('previewArea');
-  // keep it safe: fileUrl should be trusted or sanitized
-  previewArea.innerHTML = `
-    <div class="small">
-      No preview available for this file type.
-      <a href="${fileUrl}" target="_blank" rel="noopener">Download</a>
-    </div>`;
-}
-
-
-
-
-
-// Poll dir stats
-let lastTotal = 0, lastTs = Date.now();
 async function pollDirStats() {
+  if (!userPin) return;
   try {
-    const r = await fetch('/api/dir-stats');
+    const r = await fetch('/api/dir-stats', { headers: { 'x-passcode': userPin } });
+
+    if (r.status === 403) {
+      // Blocked!
+      userPin = ""; // Stop polling
+      alert("You have been temporarily blocked due to too many failed attempts.");
+      return;
+    }
+
+    if (r.status !== 200) return;
+
     const js = await r.json();
     const now = Date.now();
     const dt = (now - lastTs) / 1000 || 1;
-    const diff = js.totalBytes - lastTotal;
-    const speed = diff / dt;
-    downloadSpeedEl.textContent = formatBytes(speed) + '/s';
+    downloadSpeedEl.textContent = formatBytes((js.totalBytes - lastTotal) / dt) + '/s';
     lastTotal = js.totalBytes; lastTs = now;
-  } catch (e) {
-    // ignore
-  }
+  } catch (e) { }
 }
 
-// Helpers
-function escapeHtml(s){ return (s+'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function formatBytes(bytes){
+function escapeHtml(s) { return (s + '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
-  const units = ['B','KB','MB','GB'];
+  const units = ['B', 'KB', 'MB', 'GB'];
   let i = 0; let n = Math.abs(bytes);
-  while(n >= 1024 && i < units.length-1){ n /= 1024; i++; }
-  const sign = bytes < 0 ? '-' : '';
-  return sign + n.toFixed(2) + ' ' + units[i];
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (bytes < 0 ? '-' : '') + n.toFixed(2) + ' ' + units[i];
 }
 
-// Init
 refreshBtn.addEventListener('click', fetchFiles);
-fetchFiles();
 setInterval(pollDirStats, 1000);
-renderSelected();
 
 document.addEventListener("DOMContentLoaded", () => {
-  fetch("/connection-info")
-    .then((res) => res.json())
-    .then((data) => {
-      document.getElementById("qrCode").src = data.qrImage;
-      document.getElementById("ipLink").textContent = data.link;
-      document.getElementById("ipLink").href = data.link;
-    })
-    .catch((err) => console.error("Failed to load connection info:", err));
+  fetch("/connection-info").then(res => res.json()).then(data => {
+    document.getElementById("qrCode").src = data.qrImage;
+    document.getElementById("ipLink").textContent = data.link;
+    document.getElementById("ipLink").href = data.link;
+  });
 });
-
